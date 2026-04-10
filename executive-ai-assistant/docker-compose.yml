@@ -1,0 +1,25 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: executive-ai-assistant_ui_1
+      APP_PORT: 3000
+
+  ui:
+    image: ghcr.io/harmalh/umbrel-langchain-ai-assistant:0.1.0
+    restart: on-failure
+    stop_grace_period: 1m
+    init: true
+    user: "1000:1000"
+    environment:
+      HOME: /home/umbrel
+      EAIA_DATA_DIR: /data
+      EAIA_UI_PORT: "3000"
+      EAIA_LANGGRAPH_PORT: "2024"
+      EAIA_ENABLE_POLLER: "false"
+      EAIA_POLL_INTERVAL_SECONDS: "300"
+      EAIA_INGEST_LOOKBACK_MINUTES: "120"
+      EAIA_APPROVAL_MODE: "agent_inbox"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
