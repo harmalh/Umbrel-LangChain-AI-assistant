@@ -1,0 +1,36 @@
+manifestVersion: 1
+id: executive-ai-assistant
+name: Executive AI Assistant
+tagline: AI Gmail assistant with optional automatic polling
+icon: https://raw.githubusercontent.com/harmalh/Umbrel-LangChain-AI-assistant/main/executive-ai-assistant/assets/icon.svg
+category: ai
+version: "0.1.0"
+port: 23224
+path: ""
+description: >-
+  Umbrel packaging for LangChain's archived Executive AI Assistant project.
+
+
+  This package adds a local Umbrel control page, persistent config and secret storage,
+  and an optional polling loop that runs Gmail ingestion on a schedule.
+
+
+  Requirements:
+  - Google OAuth desktop client JSON
+  - LANGSMITH_API_KEY
+  - OPENAI_API_KEY and/or ANTHROPIC_API_KEY
+
+
+  Default mode uses Agent Inbox for human approval, which matches upstream behavior most closely.
+  You can also switch to EAIA_APPROVAL_MODE=auto_accept for a more automatic setup.
+developer: LangChain + community packaging
+website: https://github.com/langchain-ai/executive-ai-assistant
+dependencies: []
+repo: https://github.com/langchain-ai/executive-ai-assistant
+support: https://github.com/langchain-ai/executive-ai-assistant/issues
+gallery: []
+releaseNotes: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: Harm Alhusen
+submission: https://github.com/harmalh/Umbrel-LangChain-AI-assistant
