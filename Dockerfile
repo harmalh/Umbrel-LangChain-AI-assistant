@@ -1,0 +1,42 @@
+FROM python:3.12-slim
+
+ARG EAIA_REPO=https://github.com/langchain-ai/executive-ai-assistant.git
+ARG EAIA_REF=main
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 1000 --shell /bin/bash umbrel
+
+WORKDIR /app
+
+RUN git clone --depth 1 --branch "${EAIA_REF}" "${EAIA_REPO}" /app/eaia-upstream
+
+WORKDIR /app/eaia-upstream
+
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip install -e . && \
+    python -m pip install fastapi uvicorn[standard] jinja2 python-multipart pyyaml
+
+COPY docker/patches/human_inbox.py /app/eaia-upstream/eaia/main/human_inbox.py
+COPY docker/ui/app.py /opt/umbrel-ui/app.py
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/start-poller.sh /usr/local/bin/start-poller.sh
+
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-poller.sh && \
+    chown -R 1000:1000 /app /opt/umbrel-ui /home/umbrel
+
+USER 1000:1000
+
+WORKDIR /app/eaia-upstream
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
