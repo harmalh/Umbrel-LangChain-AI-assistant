@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Validate YAML
+        run: |
+          python - <<'PY'
+          import pathlib
+          import yaml
+
+          for path in [
+              pathlib.Path("executive-ai-assistant/umbrel-app.yml"),
+              pathlib.Path("executive-ai-assistant/docker-compose.yml"),
+          ]:
+              with path.open("r", encoding="utf-8") as handle:
+                  yaml.safe_load(handle)
+              print(f"validated {path}")
+          PY
+
+      - name: Validate key runtime files
+        run: |
+          test -f Dockerfile
+          test -f docker/ui/app.py
+          test -f docker/entrypoint.sh
+          test -f docker/start-poller.sh
