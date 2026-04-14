@@ -1,0 +1,332 @@
+name: Release Executive AI Assistant To Umbrel Community Store
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "versions.json"
+      - "Dockerfile"
+      - "docker/**"
+      - "executive-ai-assistant/**"
+      - ".github/workflows/release-to-umbrel-community-store.yml"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Optional release version override for the Umbrel app"
+        required: false
+        default: ""
+      image_tag:
+        description: "Optional GHCR image tag override"
+        required: false
+        default: ""
+      eaia_ref:
+        description: "Optional upstream executive-ai-assistant ref override"
+        required: false
+        default: ""
+
+concurrency:
+  group: release-executive-ai-assistant-store-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      COMMUNITY_STORE_REPO: harmalh/umbrel-community-store
+      COMMUNITY_STORE_APP_DIR: harmalh-executive-ai-assistant
+      IMAGE_NAME: ghcr.io/harmalh/umbrel-langchain-ai-assistant
+
+    steps:
+      - name: Verify community store token is configured
+        shell: bash
+        env:
+          COMMUNITY_STORE_PAT: ${{ secrets.COMMUNITY_STORE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COMMUNITY_STORE_PAT}" ]; then
+            echo "Missing required secret COMMUNITY_STORE_PAT" >&2
+            echo "Create a fine-grained GitHub token with Contents: Read and write on harmalh/umbrel-community-store." >&2
+            exit 1
+          fi
+
+      - name: Checkout packaging repo
+        uses: actions/checkout@v6
+
+      - name: Checkout community store repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.COMMUNITY_STORE_REPO }}
+          token: ${{ secrets.COMMUNITY_STORE_PAT }}
+          path: community-store
+
+      - name: Read packaging build config
+        id: config
+        shell: bash
+        env:
+          OVERRIDE_EAIA_REF: ${{ github.event.inputs.eaia_ref }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path('versions.json').read_text())
+          eaia_ref = os.environ.get('OVERRIDE_EAIA_REF', '').strip() or config['eaia_ref']
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f"eaia_repo={config['eaia_repo']}\n")
+              fh.write(f"eaia_ref={eaia_ref}\n")
+              fh.write(f"image_tag={config['image_tag']}\n")
+          PY
+
+      - name: Determine release version and image tag
+        id: release
+        shell: bash
+        env:
+          OVERRIDE_RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+          OVERRIDE_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          store_manifest = Path('community-store') / os.environ['COMMUNITY_STORE_APP_DIR'] / 'umbrel-app.yml'
+          current_version = '0.1.0'
+          if store_manifest.exists():
+              text = store_manifest.read_text(encoding='utf-8')
+              match = re.search(r'^version:\s*"([^"]+)"', text, flags=re.MULTILINE)
+              if match:
+                  current_version = match.group(1)
+
+          override_release = os.environ.get('OVERRIDE_RELEASE_VERSION', '').strip()
+          if override_release:
+              next_version = override_release
+          else:
+              parts = current_version.split('.')
+              if len(parts) != 3 or any(not p.isdigit() for p in parts):
+                  raise SystemExit(f'Current Umbrel app version is not simple semver: {current_version}')
+              major, minor, patch = map(int, parts)
+              next_version = f'{major}.{minor}.{patch + 1}'
+
+          override_image_tag = os.environ.get('OVERRIDE_IMAGE_TAG', '').strip()
+          image_tag = override_image_tag or next_version
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f'current_version={current_version}\n')
+              fh.write(f'next_version={next_version}\n')
+              fh.write(f'image_tag={image_tag}\n')
+          PY
+
+      - name: Show resolved release plan
+        shell: bash
+        run: |
+          echo "EAIA repo:        ${{ steps.config.outputs.eaia_repo }}"
+          echo "EAIA ref:         ${{ steps.config.outputs.eaia_ref }}"
+          echo "Current version:  ${{ steps.release.outputs.current_version }}"
+          echo "Release version:  ${{ steps.release.outputs.next_version }}"
+          echo "Image tag:        ${{ steps.release.outputs.image_tag }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push EAIA image
+        id: image_build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.image_tag }}
+          build-args: |
+            EAIA_REPO=https://github.com/${{ steps.config.outputs.eaia_repo }}.git
+            EAIA_REF=${{ steps.config.outputs.eaia_ref }}
+
+      - name: Print digest
+        shell: bash
+        run: |
+          echo "Image digest: ${{ steps.image_build.outputs.digest }}"
+
+      - name: Write build metadata
+        shell: bash
+        run: |
+          cat > build-metadata.json <<EOF
+          {
+            "eaia_repo": "${{ steps.config.outputs.eaia_repo }}",
+            "eaia_ref": "${{ steps.config.outputs.eaia_ref }}",
+            "release_version": "${{ steps.release.outputs.next_version }}",
+            "image_tag": "${{ steps.release.outputs.image_tag }}",
+            "image_digest": "${{ steps.image_build.outputs.digest }}"
+          }
+          EOF
+          cat build-metadata.json
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-metadata
+          path: build-metadata.json
+
+      - name: Local smoke tests (amd64 only)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -t local/umbrel-langchain-ai-assistant:${{ github.run_id }} \
+            --build-arg EAIA_REPO=https://github.com/${{ steps.config.outputs.eaia_repo }}.git \
+            --build-arg EAIA_REF=${{ steps.config.outputs.eaia_ref }} \
+            .
+
+          mkdir -p /tmp/eaia-data
+          chmod 0777 /tmp/eaia-data
+
+          cid="$(docker run -d \
+            -v /tmp/eaia-data:/data \
+            -p 3000:3000 \
+            local/umbrel-langchain-ai-assistant:${{ github.run_id }})"
+
+          ok="false"
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then
+              ok="true"
+              break
+            fi
+            sleep 2
+          done
+
+          docker logs "${cid}" --tail 250
+          docker rm -f "${cid}" || true
+
+          if [ "${ok}" != "true" ]; then
+            echo "Executive AI Assistant UI did not become ready on port 3000" >&2
+            exit 1
+          fi
+
+      - name: Prepare community store release files
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.next_version }}
+          IMAGE_TAG: ${{ steps.release.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.image_build.outputs.digest }}
+          EAIA_REPO: ${{ steps.config.outputs.eaia_repo }}
+          EAIA_REF: ${{ steps.config.outputs.eaia_ref }}
+        run: |
+          set -euo pipefail
+          target_dir="community-store/${COMMUNITY_STORE_APP_DIR}"
+          rm -rf "${target_dir}"
+          mkdir -p "${target_dir}"
+          cp -R executive-ai-assistant/. "${target_dir}/"
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          target_dir = Path('community-store') / os.environ['COMMUNITY_STORE_APP_DIR']
+          compose_path = target_dir / 'docker-compose.yml'
+          manifest_path = target_dir / 'umbrel-app.yml'
+
+          release_version = os.environ['RELEASE_VERSION']
+          image_tag = os.environ['IMAGE_TAG']
+          image_digest = os.environ['IMAGE_DIGEST']
+          eaia_repo = os.environ['EAIA_REPO']
+          eaia_ref = os.environ['EAIA_REF']
+          store_app_id = os.environ['COMMUNITY_STORE_APP_DIR']
+
+          compose_text = compose_path.read_text(encoding='utf-8')
+          compose_text = re.sub(
+              r'(^\s*APP_HOST:\s*).*$' ,
+              rf'\1{store_app_id}_ui_1',
+              compose_text,
+              flags=re.MULTILINE,
+          )
+          compose_text = re.sub(
+              r'(^\s*image:\s*)ghcr\.io/harmalh/umbrel-langchain-ai-assistant:[^\s]+$',
+              rf'\1ghcr.io/harmalh/umbrel-langchain-ai-assistant:{image_tag}@{image_digest}',
+              compose_text,
+              flags=re.MULTILINE,
+          )
+          compose_path.write_text(compose_text, encoding='utf-8')
+
+          manifest_text = manifest_path.read_text(encoding='utf-8')
+          manifest_text = re.sub(
+              r'^id:\s*.*$',
+              f'id: {store_app_id}',
+              manifest_text,
+              flags=re.MULTILINE,
+          )
+          manifest_text = re.sub(
+              r'^version:\s*"[^"]+"',
+              f'version: "{release_version}"',
+              manifest_text,
+              flags=re.MULTILINE,
+          )
+          manifest_text = re.sub(
+              r'^icon:\s*.*$',
+              f'icon: https://raw.githubusercontent.com/harmalh/umbrel-community-store/main/{store_app_id}/assets/icon.svg',
+              manifest_text,
+              flags=re.MULTILINE,
+          )
+          manifest_text = re.sub(
+              r'^submission:\s*.*$',
+              'submission: https://github.com/harmalh/umbrel-community-store',
+              manifest_text,
+              flags=re.MULTILINE,
+          )
+
+          release_notes_block = (
+              'releaseNotes: >-\n'
+              '  Automated private release from harmalh/Umbrel-LangChain-AI-assistant.\n\n'
+              f'  Upstream EAIA repo: {eaia_repo}\n'
+              f'  Upstream EAIA ref: {eaia_ref}\n'
+              f'  Image: ghcr.io/harmalh/umbrel-langchain-ai-assistant:{image_tag}@{image_digest}\n'
+          )
+
+          manifest_text = re.sub(
+              r'^releaseNotes:\s*""$',
+              release_notes_block.rstrip(),
+              manifest_text,
+              flags=re.MULTILINE,
+          )
+
+          manifest_path.write_text(manifest_text + '\n', encoding='utf-8')
+          PY
+
+      - name: Commit and push community store release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd community-store
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${COMMUNITY_STORE_APP_DIR}"
+
+          if git diff --cached --quiet; then
+            echo "No community store changes to publish"
+            exit 0
+          fi
+
+          git commit -m "Release Executive AI Assistant ${{ steps.release.outputs.next_version }}"
+          git push origin HEAD:main
